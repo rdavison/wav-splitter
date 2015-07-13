@@ -1,6 +1,6 @@
 module Main where
 
-import Codec.Wav (importFile, bitsPerSample)
+import Codec.Wav (importFile, exportFile, bitsPerSample)
 import Data.Audio (Audio(Audio))
 import Data.Array.Unboxed (elems)
 import Data.Int (Int32)
@@ -15,6 +15,7 @@ import Control.Applicative
 import Numeric (showHex)
 import Data.List (sort, reverse)
 import Data.Bool (bool)
+import Control.Monad (zipWithM_)
 import Control.Monad.Loops (untilM)
 
 glossika :: FilePath
@@ -142,8 +143,8 @@ myChunk = go BS.empty where
 --parseGlossika = silence *> getChunk `A.sepBy` silence1
 parseGlossika = myChunk `untilM` (A.atEnd)
 
-buildAudio rawChunk = Audio 
-                               
+getFilename n = "output/out-" ++ show n ++ ".wav"
+
 main = do
     -- Get the audio and print stats
     rawAudio <- getAudio glossika
@@ -154,11 +155,18 @@ main = do
     putStrLn . show $ BS.length bs
     --A.parseTest (parseGlossika <* A.endOfInput) bs
     case A.parseOnly (A.skipWhile (== 128) *> parseGlossika) bs of
-        Right s -> do
-            let chunkSizes = fmap BS.length s
-            let numChunks = length chunkSizes
-            -- --putStrLn . show $ "Chunks: " ++ show s
-            -- --putStrLn . show $ "Num Chunks: " ++ show numChunks
-            putStrLn . show $ "Chunk Sizes: " ++ show chunkSizes
-            putStrLn . show $ "Num Chunks: " ++ show numChunks
+        Right s -> do 
+            let asSampleData = fmap (toSampleData . toList) s
+            let asAudio = fmap toAudio asSampleData
+            zipWithM_ exportFile (fmap getFilename [1..]) asAudio
+            where
+                toList = BS.unpack
+                toSampleData = \x -> array (0, (length x) - 1) (zip [0..] x)
+                toAudio = \x -> Audio (sampleRate rawAudio) (channelNumber rawAudio) x
+    --         -- let chunkSizes = fmap BS.length s
+    --         -- let numChunks = length chunkSizes
+    --         -- --putStrLn . show $ "Chunks: " ++ show s
+    --         -- --putStrLn . show $ "Num Chunks: " ++ show numChunks
+    --         -- putStrLn . show $ "Chunk Sizes: " ++ show chunkSizes
+    --         -- putStrLn . show $ "Num Chunks: " ++ show numChunks
         Left s -> putStrLn . show $ s
