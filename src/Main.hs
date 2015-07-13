@@ -144,9 +144,6 @@ parseGlossika = myChunk `untilM` (A.atEnd)
 
 buildAudio rawChunk = Audio 
                                
-writeToFile (chunk:chunks) = do
-writeToFile [] = IO ()
-
 main = do
     -- Get the audio and print stats
     rawAudio <- getAudio glossika
@@ -158,11 +155,10 @@ main = do
     --A.parseTest (parseGlossika <* A.endOfInput) bs
     case A.parseOnly (A.skipWhile (== 128) *> parseGlossika) bs of
         Right s -> do
-            fmap (\rawSamples -> Audio (sampleRate rawAudio) (channelNumber rawAudio) 
-            -- let chunkSizes = fmap BS.length s
-            -- let numChunks = length chunkSizes
+            let chunkSizes = fmap BS.length s
+            let numChunks = length chunkSizes
             -- --putStrLn . show $ "Chunks: " ++ show s
             -- --putStrLn . show $ "Num Chunks: " ++ show numChunks
-            -- putStrLn . show $ "Chunk Sizes: " ++ show chunkSizes
-            -- putStrLn . show $ "Num Chunks: " ++ show numChunks
+            putStrLn . show $ "Chunk Sizes: " ++ show chunkSizes
+            putStrLn . show $ "Num Chunks: " ++ show numChunks
         Left s -> putStrLn . show $ s
