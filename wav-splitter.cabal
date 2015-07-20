@@ -24,6 +24,9 @@ executable glossika-combiner
                        array,
                        bytestring,
                        attoparsec,
-                       monad-loops
+                       monad-loops,
+                       directory,
+                       split,
+                       async
   hs-source-dirs:      src
   default-language:    Haskell2010

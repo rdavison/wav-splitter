@@ -11,8 +11,14 @@ import qualified Data.Attoparsec.ByteString as A
 import Control.Applicative
 import Control.Monad (zipWithM_)
 import Control.Monad.Loops (untilM)
+import System.Directory
+import Data.List
+import Data.List.Split
+import Control.Concurrent.Async (mapConcurrently)
+import System.Environment (getArgs)
 
-pauseSampleLength = 20500
+
+pauseSampleLength = 82000
 deadSilence = 128
 (silenceRangeStart, silenceRangeEnd) = (126, 130)
 
@@ -56,13 +62,29 @@ parseChunk = go BS.empty where
 parseSplitOnPause :: A.Parser [BS.ByteString]
 parseSplitOnPause = parseChunk `untilM` (A.atEnd)
 
-mkOutFilename :: Int -> FilePath
-mkOutFilename n = "output/out-" ++ show n ++ ".wav"
+mkOutFilename :: String -> Int -> FilePath
+mkOutFilename base n = "output/" ++ base ++ "-" ++ show n ++ ".wav"
 
-saveResults :: [Audio Word8] -> IO ()
-saveResults = zipWithM_ exportFile outputFilenames
+mkCombinedFilename :: String -> String -> FilePath
+mkCombinedFilename left right = "output/" ++ "left" ++ "-" ++ "right" ++ ".wav"
+
+saveResults :: [FilePath] -> [Audio Word8] -> IO ()
+saveResults splitFilename audioList = zipWithM_ exportFile outputFilenames audioList
     where
-        outputFilenames = fmap mkOutFilename [1..]
+        outputFilenames = fmap (mkOutFilename base) [1..]
+        name = head $ splitOn "." (splitFilename !! 2)
+        base = concat $ intersperse "/" [splitFilename !! 1, name]
+
+saveCombinedResults :: String -> String -> Audio Word8 -> IO ()
+saveCombinedResults left right audio
+    = exportFile outputFilename audio
+    where
+        outputFilename = mkCombinedFilename left right
+        --let pair = take 2 filenames
+        --let mapped = map parseFilename pair
+        --where
+        --    name = head $ splitOn "." (splitFilename !! 2)
+        --    base = concat $ intersperse "/" [splitFilename !! 1, name]
 
 toAudio :: Int -> Int -> BS.ByteString -> Audio Word8
 toAudio sampleRate' channelNumber' rawResults
@@ -74,14 +96,13 @@ toAudio sampleRate' channelNumber' rawResults
         toList = BS.unpack
         toSampleData = \x -> array (0, (length x) - 1) (zip [0..] x)
 
-main :: IO ()
-main = do
-    -- Specify the file we want to parse
-    let filename = "res/GLOSSIKA-ENJA-F1-GMS-0001A.wav"
+parseFile :: [String] -> IO ()
+parseFile splitFilename = do
+    let inputFilename = concat $ intersperse "/" splitFilename
 
     -- Read the file
-    putStrLn $ "Reading in file " ++ filename
-    rawAudio <- readWavFile filename
+    putStrLn $ "Reading in file " ++ inputFilename
+    rawAudio <- readWavFile inputFilename
     putStrLn ""
 
     -- Print information about the parsed file
@@ -105,9 +126,46 @@ main = do
     case parseResults of
         Right results -> do
             putStrLn "Parser success! Saving results..."
-            saveResults $ rebuild results
+            saveResults splitFilename $ rebuild results
             putStrLn "Done"
 
         Left errorMsg -> do
             putStrLn "Parser returned an error..."
             putStrLn . show $ errorMsg
+
+getFilenames :: IO [FilePath]
+getFilenames = do
+    -- Specify the file we want to parse
+    let filename = "res/GLOSSIKA-ENYUE-F1-GMS-0001A.wav"
+    let foldername = "res/"
+    rawFolders <- fmap (filter (\x -> not $ isPrefixOf "." x)) $ getDirectoryContents foldername
+    let folders' = fmap (foldername ++) rawFolders
+    let folders = fmap (\x -> x ++ "/") folders'
+    rawListOfFiles <- mapM getDirectoryContents folders
+    let filteredRawListOfFiles = fmap (filter (\x -> not $ isPrefixOf "." x)) rawListOfFiles
+    let rawListOfFiles' = zip folders filteredRawListOfFiles
+    let listOfFiles = fmap (\(folder, files) -> map (folder ++) files) rawListOfFiles'
+    let flattened = concat listOfFiles
+    return flattened
+
+appSplitWavs :: IO ()
+appSplitWavs = do
+    filenames <- getFilenames
+    let splitFilenames = fmap (splitOn "/") (take 1 (filter (isInfixOf "ENKR") filenames))
+    mapM parseFile splitFilenames >> return ()
+
+appJoiner :: FilePath -> FilePath -> IO ()
+appJoiner left right = do
+    leftAudio <- readWavFile left
+    rightAudio <- readWavFile right
+    return ()
+
+    ---- Convert to ByteString for Attoparsec parsing
+    --let leftByteString = BS.pack .  elems .  sampleData $ leftAudio
+    --let rightByteString = BS.pack .  elems .  sampleData $ rightAudio
+    --let combinedByteString = leftByteString `BS.append` rightByteString
+    --let combinedAudio = toAudio (sampleRate leftAudio) (channelNumber leftAudio) combinedByteString
+    --saveCombinedResults left right combinedAudio
+
+main :: IO ()
+main = undefined
