@@ -7,8 +7,12 @@ import Data.Audio
 import Data.Array.IArray
 import Data.Word (Word8)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BSL
+import qualified Blaze.ByteString.Builder as BBB
 import qualified Data.Attoparsec.ByteString as A
+import qualified Codec.ByteString.Parser as CBP
 import Control.Applicative
+import Data.Monoid
 import Control.Monad (zipWithM_)
 import Control.Monad.Loops (untilM)
 import System.Directory
@@ -16,10 +20,12 @@ import Data.List
 import Data.List.Split
 import Control.Concurrent.Async (mapConcurrently)
 import System.Environment (getArgs)
+import Data.Int
 
 
 pauseSampleLength = 82000
 deadSilence = 128
+new_deadSilence = 0
 (silenceRangeStart, silenceRangeEnd) = (126, 130)
 
 readWavFile :: FilePath -> IO (Audio Word8)
@@ -31,6 +37,9 @@ readWavFile path = do
     
 isSilence :: Word8 -> Bool
 isSilence x = x == deadSilence
+
+new_isSilence :: Int16 -> Bool
+new_isSilence x = x == new_deadSilence
         
 parseSoundChunk :: A.Parser BS.ByteString
 parseSoundChunk = A.takeWhile $ not . isSilence
@@ -50,6 +59,88 @@ parseMaybeSilentChunk = go 0 BS.empty where
                         then return $ Just acc
                         else return Nothing
 
+new_parseSilenceByte :: CBP.Parser (Maybe Int16)
+new_parseSilenceByte = do
+    x <- CBP.lookAhead CBP.getInt16le
+    case x of
+        0 ->
+            return $ Just x
+
+        _ ->
+            return Nothing
+
+
+new_parseSilence :: CBP.Parser (Either [Int16] [Int16])
+new_parseSilence = go 0 [] where
+    go i acc = do
+        x <- CBP.lookAheadM new_parseSilenceByte
+        case x of
+            Just k ->
+                go (i+1) (k:acc)
+
+            Nothing ->
+                if i < pauseSampleLength
+                    then return $ Right acc
+                    else return $ Left acc
+
+
+new_parseNoiseByte :: CBP.Parser (Maybe Int16)
+new_parseNoiseByte = do
+    x <- CBP.lookAhead CBP.getInt16le
+    case x of
+        0 ->
+            return Nothing
+
+        _ ->
+            return $ Just x
+
+
+new_parseNoise :: CBP.Parser [Int16]
+new_parseNoise = go [] where
+    go acc = do
+        x <- CBP.lookAheadM new_parseNoiseByte
+        case x of
+            Just k ->
+                CBP.skip 1 >> go (k:acc)
+
+            _ ->
+                return acc
+
+new_parseChunk :: CBP.Parser BS.ByteString
+new_parseChunk = go [] where
+    go acc = do
+        noiseChunk <- new_parseNoise
+        eitherSilenceChunk <- new_parseSilence
+        case eitherSilenceChunk of
+            Right silenceChunk ->
+                go $ acc' where acc' = acc ++ (noiseChunk ++ silenceChunk)
+
+            Left silenceChunk ->
+                return . renderToBS $ acc ++ noiseChunk
+
+
+--new_parseChunkLength :: CBP.Parser Int
+--new_parseChunkLength = go 0 where
+--    go i = do
+--        noiseLength <- new_parseNoiseLength
+--        silenceLength <- new_parseSilenceLength
+--
+--        case silentLength of
+--            Right k ->
+--                go $ i + noiseLength + k
+--            Left k ->
+--                return $ i + noiseLength
+
+
+--new_parseChunk :: CBP.Parser BS.ByteString
+--new_parseChunk = chunkLength >>= CBP.take 
+--
+
+renderToBS :: [Int16] -> BS.ByteString
+renderToBS ks = BBB.toByteString $ go ks where
+    go [] = mempty
+    go (x:xs) = BBB.fromInt16le x <> go xs
+
 parseChunk :: A.Parser BS.ByteString
 parseChunk = go BS.empty where
     go acc = do
@@ -61,6 +152,9 @@ parseChunk = go BS.empty where
 
 parseSplitOnPause :: A.Parser [BS.ByteString]
 parseSplitOnPause = parseChunk `untilM` (A.atEnd)
+
+new_parseSplitOnPause :: CBP.Parser [BS.ByteString]
+new_parseSplitOnPause = new_parseChunk `untilM` (CBP.isEmpty)
 
 mkOutFilename :: String -> Int -> FilePath
 mkOutFilename base n = "output/" ++ base ++ "-" ++ show n ++ ".wav"
@@ -96,6 +190,8 @@ toAudio sampleRate' channelNumber' rawResults
         toList = BS.unpack
         toSampleData = \x -> array (0, (length x) - 1) (zip [0..] x)
 
+        
+
 parseFile :: [String] -> IO ()
 parseFile splitFilename = do
     let inputFilename = concat $ intersperse "/" splitFilename
@@ -110,23 +206,26 @@ parseFile splitFilename = do
     putStrLn "---------------------"
     putStrLn . show $ rawAudio
 
-    -- Convert to ByteString for Attoparsec parsing
-    let rawByteString = BS.pack .  elems .  sampleData $ rawAudio
+    -- Convert to ByteString
+    let rawByteString = BS.pack . take 20000 . elems .  sampleData $ rawAudio
+    let new_rawByteString = BSL.pack . take 20000 . elems .  sampleData $ rawAudio
 
     -- Fast-forward parser to the good parts
     let parseSplitOnPause' = A.skipWhile isSilence *> parseSplitOnPause
+    let new_parseSplitOnPause' = CBP.lookAheadE new_parseSilence >> new_parseSplitOnPause
 
     -- Run the Parser
     let parseResults = A.parseOnly parseSplitOnPause' rawByteString
+    let new_parseResults = CBP.runParser new_parseSplitOnPause' new_rawByteString
 
     -- Create a function to rebuild the raw parsed results
-    let rebuild = fmap $ toAudio (sampleRate rawAudio) (channelNumber rawAudio)
+    let rebuild = toAudio (sampleRate rawAudio) (channelNumber rawAudio)
 
     -- Check the results
-    case parseResults of
+    case new_parseResults of
         Right results -> do
             putStrLn "Parser success! Saving results..."
-            saveResults splitFilename $ rebuild results
+            --saveResults splitFilename $ fmap rebuild results
             putStrLn "Done"
 
         Left errorMsg -> do
@@ -151,6 +250,7 @@ getFilenames = do
 appSplitWavs :: IO ()
 appSplitWavs = do
     filenames <- getFilenames
+    --let filenames = [all_filenames !! 0]
     let splitFilenames = fmap (splitOn "/") (take 1 (filter (isInfixOf "ENKR") filenames))
     mapM parseFile splitFilenames >> return ()
 
